@@ -40,7 +40,7 @@ EOH
               ["-float",  "float",   1, \$Float,  "a floating-point number" ],
               ["-string", "string",  1, \$String, "a string" ],
               ["-ustring","upperstring",3,\@UStrings,
-               "an uppercase string (example of a user-defiend pattern type)"],
+               "an uppercase string (example of a user-defined pattern type)"],
               ["-flag",   "boolean", 0, \$Flag,   "a boolean flag" ],
               ["-foo", "call",    0, \&get_foo, "do nothing important"],
               ["-show",   "eval",    0, 'print "Ints = @Ints\n";',
@@ -50,7 +50,7 @@ EOH
 # Here's an example subroutine used by the "-foo" option -- note that
 # it modifies the list referenced by its second argument, which is perfectly
 # legal; this modification propagates back up to change @ARGV after 
-# &ParseArgs is finished.
+# &GetOptions is finished.
 
 sub get_foo
 {

@@ -3,6 +3,6 @@ use ExtUtils::MakeMaker;
 # the contents of the Makefile that is written.
 WriteMakefile(
     'NAME'	=> 'Getopt::Tabular',
-    'VERSION_FROM' => 'Tabular.pm', # finds $VERSION,
-    'dist' => { COMPRESS=>"gzip", SUFFIX=>"gz" }
+    'VERSION'   => '0.2',
+    'dist'      => { COMPRESS=>"gzip", SUFFIX=>"gz" }
 );

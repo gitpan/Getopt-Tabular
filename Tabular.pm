@@ -2,15 +2,17 @@ package Getopt::Tabular;
 
 # Getopt/Tabular.pm
 #
+
 # Perl5 package for table-driven argument parsing, somewhat like Tk's
-# ParseArgv.  To use the package, you just have to set up an argument 
-# table (a list of array references), and call &GetOptions (the name
-# is exported from the module).  &GetOptions takes two arguments:
-# a reference to your argument table (which is not modified), and
-# a reference to the list of command line arguments, e.g. @ARGV (or
-# a copy of it).  Both arrays are unmodified, but a new version of
-# @ARGV (or whatever) is returned with options and their arguments
-# removed, so you can easily pluck out the leftover arguments.
+# ParseArgv.  To use the package, you just have to set up an argument table
+# (a list of array references), and call &GetOptions (the name is exported
+# from the module).  &GetOptions takes two or three arguments; a reference
+# to your argument table (which is not modified), a reference to the list
+# of command line arguments, e.g. @ARGV (or a copy of it), and (optionally)
+# a reference to a new empty array.  In the two argument form, the second
+# argument is modified in place to remove all options and their arguments.
+# In the three argument form, the second argument is unmodified, and the
+# third argument is set to a copy of it with options removed.
 #
 # The argument table consists of one element per valid command-line option;
 # each element should be a reference to a list of the form:
@@ -23,9 +25,9 @@ package Getopt::Tabular;
 # renamed to Getopt::Tabular and somewhat reorganized/reworked,
 # 1996/11/08-11/10
 #
-# $Id: Tabular.pm,v 1.2 1996/11/11 16:28:28 greg Exp $
+# $Id: Tabular.pm,v 1.4 1997/06/19 18:11:09 greg Exp $
 
-# Copyright (c) 1995-96 Greg Ward. All rights reserved.  This program is
+# Copyright (c) 1995-96 Greg Ward. All rights reserved.  This package is
 # free software; you can redistribute it and/or modify it under the same
 # terms as Perl itself.
 
@@ -35,13 +37,13 @@ use Carp;
 use strict;
 use vars qw($VERSION @ISA @EXPORT @EXPORT_OK);
 use vars qw/%Patterns %OptionHandlers %TypeDescriptions @OptionPatterns
-            $OptionTerminator $AllowTermination $HelpOption
+            %SpoofCode $OptionTerminator $HelpOption
             $LongHelp $Usage $ErrorClass $ErrorMessage/;
 
 $VERSION = 0.1;
 @ISA = qw/Exporter/;
 @EXPORT = qw/GetOptions/;
-@EXPORT_OK = qw/SetHelp SetHelpOption SetError GetError/;
+@EXPORT_OK = qw/SetHelp SetHelpOption SetError GetError SpoofGetOptions/;
 
 # -------------------------------------------------------------------- #
 # Private global variables                                             #
@@ -90,6 +92,13 @@ $VERSION = 0.1;
 @OptionPatterns = ('(-)(\w+)');        # two parts: "prefix" and "body"
 $OptionTerminator = "--";
 $HelpOption = "-help";
+
+# The %SpoofCode hash is for storing alternate versions of callbacks
+# for call or eval options.  The alternate versions should have no side
+# effects apart from changing the argument list identically to their
+# "real" alternatives.
+
+%SpoofCode = ();
 
 $ErrorClass = "";                       # can be "bad_option", "bad_value",
                                         # "bad_eval", or "help"
@@ -144,6 +153,19 @@ sub GetPattern
 {
    my ($type) = @_;
    $Patterns{$type};
+}
+
+sub SetSpoofCodes
+{
+   my ($option, $code);
+   croak "Even number of arguments required" 
+      unless (@_ > 0 && @_ % 2 == 0);
+
+   while (@_)
+   {
+      ($option, $code) = (shift, shift);
+      $SpoofCode{$option} = $code;
+   }
 }
 
 sub SetError
@@ -501,11 +523,12 @@ sub find_calling_package
 # ----------------------------------------------------------------------
 
 # General description of these routines: 
-#   * each one is passed exactly three options:
-#     - $arg      - the argument that triggered this routine, expanded
+#   * each one is passed exactly four options:
+#       $arg      - the argument that triggered this routine, expanded
 #                   into unabbreviated form
-#     - $arglist  - reference to list containing rest of command line
-#     - $opt_desc - reference to an option descriptor list
+#       $arglist  - reference to list containing rest of command line
+#       $opt_desc - reference to an option descriptor list
+#       $spoof    - flag: if true, then no side effects
 #   * they are called from GetOptions, through code references in the
 #     %OptionHandlers hash
 #   * if they return a false value, then GetOptions immediately returns
@@ -516,8 +539,10 @@ sub find_calling_package
 
 sub process_constant_option
 {
-   my ($arg, $arglist, $opt_desc) = @_;
+   my ($arg, $arglist, $opt_desc, $spoof) = @_;
    my ($type, $n, $value) = @$opt_desc[1,2,3];
+
+   return 1 if $spoof;
 
    if ($type eq "const")
    {
@@ -546,8 +571,10 @@ sub process_constant_option
 
 sub process_boolean_option
 {
-   my ($arg, $arglist, $opt_desc) = @_;
+   my ($arg, $arglist, $opt_desc, $spoof) = @_;
    my ($value) = $$opt_desc[3];
+   
+   return 1 if $spoof;
 
    my ($pos,$neg) = &split_option ($opt_desc);
    confess ("internal error: option $arg not found in argument hash")
@@ -560,18 +587,24 @@ sub process_boolean_option
 
 sub process_call_option
 {
-   my ($arg, $arglist, $opt_desc) = @_;
+   my ($arg, $arglist, $opt_desc, $spoof) = @_;
    my ($option, $args, $value) = @$opt_desc[0,2,3];
 
    croak "Invalid option table entry for option \"$option\" -- \"value\" " .
          "field must be a code reference"
       unless (ref $value eq 'CODE');
 
+   # This will crash 'n burn big time if there is no spoof code for
+   # this option -- but that's why we check %SpoofCode against the
+   # arg table from GetOptions!
+
+   $value = $SpoofCode{$arg} if ($spoof);
+
    my @args = (ref $args eq 'ARRAY') ? (@$args) : ();
    my $result = &$value ($arg, $arglist, @args);
    if (!$result)
    {
-      # Gee, wouldn't it be neat if we get get the sub name from the code ref?
+      # Wouldn't it be neat if we could get the sub name from the code ref?
       &SetError
          ($ErrorClass || "bad_call",
           $ErrorMessage || "subroutine call from option \"$arg\" failed");
@@ -584,8 +617,10 @@ sub process_call_option
 
 sub process_eval_option
 {
-   my ($arg, $arglist, $opt_desc) = @_;
+   my ($arg, $arglist, $opt_desc, $spoof) = @_;
    my ($value) = $$opt_desc[3];
+
+   $value = $SpoofCode{$arg} if ($spoof);
 
    my $up_pkg = &find_calling_package ();
 #   print "package $up_pkg; $value";  # DEBUG ONLY
@@ -611,8 +646,9 @@ sub process_eval_option
 
 sub process_pattern_option
 {
-   my ($arg, $arglist, $opt_desc) = @_;
+   my ($arg, $arglist, $opt_desc, $spoof) = @_;
    my ($type, $n, $value) = @$opt_desc[1,2,3];
+   my ($dummy, @dummies);
 
    # This code looks a little more complicated than you might at first
    # think necessary.  But the ugliness is necessary because $value might
@@ -622,12 +658,18 @@ sub process_pattern_option
    # be.
 
    if ($n == 1)                         # scalar-valued option (one argument)
-   {                                    
+   {
+      croak "GetOptions: \"$arg\" option must be associated with a scalar ref"
+         unless ref $value eq 'SCALAR';
+      $value = \$dummy if $spoof;
       $$value = shift @$arglist;
       return 0 unless &check_value ($$value, $arg, $type, $n);
    }
    else                                 # it's a "vector-valued" option
    {                                    # (fixed number of arguments)
+      croak "GetOptions: \"$arg\" option must be associated with an array ref"
+         unless ref $value eq 'ARRAY';
+      $value = \@dummies if $spoof;
       @$value = splice (@$arglist, 0, $n);
       if (scalar @$value != $n)
       {
@@ -653,7 +695,7 @@ sub process_pattern_option
 
 sub GetOptions
 {
-   my ($opt_table, $arglist, $new_arglist) = @_;
+   my ($opt_table, $arglist, $new_arglist, $spoof) = @_;
    my (%argpos, $arg, $pos, $opt_ref);
    my ($option_re, @option_list);
 
@@ -678,6 +720,27 @@ sub GetOptions
    }
    push (@option_list, $HelpOption) if $HelpOption;
 
+   # If in spoof mode: make sure we have spoof code for all call/eval options
+
+   if ($spoof)
+   {
+      my ($opt, $type, $spoof);
+
+      foreach $opt_desc (@$opt_table)
+      {
+         $opt = $opt_desc->[0];
+         $type = $opt_desc->[1];
+         $spoof = $SpoofCode{$opt};
+
+         next unless $type eq 'call' || $type eq 'eval';
+         croak "No alternate code supplied for option $opt in spoof mode"
+            unless defined $spoof;
+         croak "Alternate code must be a CODE ref for option $opt"
+            if ($type eq 'call' && ref $spoof ne 'CODE');
+         croak "Alternate code must be a string for option $opt"
+            if ($type eq 'eval' && ref $spoof);
+      }
+   }
 
    # Now walk over the argument list
 
@@ -719,6 +782,7 @@ sub GetOptions
       }
 
       # If it's the help option, print out the help and return
+      # (even if in spoof mode!)
 
       if ($arg eq $HelpOption)
       {
@@ -738,11 +802,11 @@ sub GetOptions
 
       my $opt_desc = $opt_table->[$pos];
       my $type = $opt_desc->[1];
+      my $handler = $OptionHandlers{$type};
 
-      if (exists $OptionHandlers{$type} && 
-          ref ($OptionHandlers{$type}) eq 'CODE')
+      if (defined $handler && ref ($handler) eq 'CODE')
       {
-         if (! &{$OptionHandlers{$type}} ($arg, \@tmp_arglist, $opt_desc))
+         if (! &$handler ($arg, \@tmp_arglist, $opt_desc, $spoof))
          {
             warn $Usage if defined $Usage;
             warn "$ErrorMessage\n";
@@ -758,5 +822,11 @@ sub GetOptions
    return 1;
 
 }     # GetOptions
+
+
+sub SpoofGetOptions
+{
+   &GetOptions (@_[0..2], 1);
+}
 
 1;

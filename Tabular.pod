@@ -102,6 +102,10 @@ easy to extend.
 =item To make your program look smarter, options can be abbreviated and
 come in any order.
 
+=item You can parse options in a "spoof" mode that has no side-effects -- 
+this is useful for making a validation pass over the command line without
+actually doing anything.
+
 =back
 
 In general, I have found that Getopt::Tabular tends to encourage programs
@@ -139,14 +143,15 @@ this:
 
 and then call C<GetOptions> like this:
 
-    &C<GetOptions> (\@options, \@ARGV) || exit 1;
+    &GetOptions (\@options, \@ARGV) || exit 1;
 
 which replaces C<@ARGV> with a new array containing all the arguments
-left-over after options and their arguments have been removed.  You can also call C<GetOptions> with three arguments, like this:
+left-over after options and their arguments have been removed.  You can
+also call C<GetOptions> with three arguments, like this:
 
-    &C<GetOptions> (\@options, \@ARGV, \@newARGV) || exit 1;
+    &GetOptions (\@options, \@ARGV, \@newARGV) || exit 1;
 
-in which case C<@ARGV> is left alone, and C<@newARGV> gets the leftover
+in which case C<@ARGV> is untouched, and C<@newARGV> gets the leftover
 arguments.
 
 In case of error, C<GetOptions> prints enough information for the user to
@@ -513,7 +518,7 @@ it is ignored.)  For example, you might define a subroutine
     {
        my ($opt, $args, $dest) = @_;
 
-       $$dest = shift @$args;
+       $$dest = shift @$args;    # not quite right! (see below)
     }
 
 with a corresponding option table entry:
@@ -768,12 +773,6 @@ using Getopt::Tabular is programs with ridiculously long option lists -- not
 altogether a bad thing, I suppose).  For example, this table fragment:
 
     @argtbl = (...,
-
-
-
-
-
-
                ["-foo", "integer", 1, \$Foo,
                 "set the foo value", "f"],
                ["-enterfoomode", "call", 0, \&enter_foo_mode,
@@ -796,6 +795,143 @@ results in the following chunk of help text:
 (This example also illustrates a slightly different style of argument
 placeholder.  Take your pick, or invent your own!)
 
+=head1 SPOOF MODE
+
+Since callbacks from the command line (C<call> and C<eval> options) can
+do anything, they might be quite expensive.  In certain cases, then, you
+might want to make an initial pass over the command line to ensure that
+everything is OK before parsing it "for real" and incurring all those
+expensive callbacks.  Thus, C<Getopt::Tabular> provides a "spoof" mode
+for parsing a command line without side-effects.  In the simplest case,
+you can access spoof mode like this:
+
+   use Getopt::Tabular qw(SpoofGetOptions GetOptions);
+     .
+     .
+     .
+   &SpoofGetOptions (\@options, \@ARGV, \@newARGV) || exit 1;
+
+and then later on, you would call C<GetOptions> with the I<original>
+C<@ARGV> (so it can do what C<SpoofGetOptions> merely pretended to do):
+
+   &GetOptions (\@options, \@ARGV, \@newARGV) || exit 1;
+
+For most option types, any errors that C<GetOptions> would catch should
+also be caught by C<SpoofGetOptions> -- so you might initially think
+that you can get away without that C<|| exit 1> after calling
+C<GetOptions>.  However, it's a good idea for a couple of reasons.
+First, you might inadvertently changed C<@ARGV> -- this is usually a bug
+and a silly thing to do, so you'd probably want your program to crash
+loudly rather than fail mysteriously later on.  Second, and more likely,
+some of those expensive operations that you're initially avoiding by
+using C<SpoofGetOptions> might themselves fail -- which would cause
+C<GetOptions> to return false where C<SpoofGetOption> completes without
+a problem.  (Finally, there's the faint possiblity of bugs in
+C<Getopt::Tabular> that would cause different behaviour in spoof mode
+and real mode -- this really shouldn't happen, though.)
+
+In reality, using spoof mode requires a bit more work.  In particular,
+the whole reason for spoof argument parsing is to avoid expensive
+callbacks, but since callbacks can eat any number of command line
+arguments, you have to emulate them in some way.  It's not possible for
+C<SpoofGetOptions> to do this for you, so you have to help out by
+supplying "spoof" callbacks.  As an example, let's say you have a
+callback option that eats one argument (a filename) and immediately
+reads that file:
+
+   @filedata = ();
+
+   sub read_file
+   {
+      my ($opt, $args) = @_;
+
+      warn ("$opt option requires an argument\n"), return 0 unless @$args;
+      my $file = shift @$args;
+      open (FILE, $file) ||
+         (warn ("$file: $!\n"), return 0);
+      push (@filedata, <FILE>);
+      close (FILE);
+      return 1;
+   }
+
+   @options = 
+      (['-read_file', 'call', undef, \&read_file]);
+
+Since C<-read_file> could occur any number of times on the command line,
+we might end up reading an awful lot of files, and thus it might be a
+long time before we catch errors late in the command line.  Thus, we'd
+like to do a "spoof" pass over the command line to catch all errors.  A
+simplistic approach would be to supply a spoof callback that just eats
+one argument and returns success:
+
+   sub spoof_read_file
+   {
+      my ($opt, $args) = @_;
+      (warn ("$opt option requires an argument\n"), return 0)
+         unless @$args;
+      shift @$args;
+      return 1;
+   }
+
+Then, you have to tell C<Getopt::Tabular> about this alternate callback
+with no side-effects (apart from eating that one argument):
+
+   &Getopt::Tabular::SetSpoofCodes (-read_file => \&spoof_read_file);
+
+(C<SetSpoofCodes> just takes a list of key/value pairs, where the keys
+are C<call> or C<eval> options, and the values are the "no side-effects"
+callbacks.  Naturally, the replacement callback for an C<eval> option
+should be a string, and for a C<call> option it should be a code
+reference.  This is not actually checked, however, until you call
+C<SpoofGetOptions>, because C<SetSpoofCodes> doesn't know whether
+options are C<call> or C<eval> or what.)
+
+A more useful C<spoof_read_file>, however, would actually check if the
+requested file exists -- i.e., we should try to catch as many errors as
+possible, as early as possible:
+
+   sub spoof_read_file
+   {
+      my ($opt, $args) = @_;
+      warn ("$opt option requires an argument\n"), return 0
+         unless @$args;
+      my $file = shift @$args;
+      warn ("$file does not exist or is not readable\n"), return 0
+         unless -r $file;
+      return 1;
+   }
+
+Finally, you can frequently merge the "real" and "spoof" callback into
+one subroutine:
+
+   sub read_file
+   {
+      my ($opt, $args, $spoof) = @_;
+
+      warn ("$opt option requires an argument\n"), return 0 unless @$args;
+      my $file = shift @$args;
+      warn ("$file does not exist or is not readable\n"), return 0
+         unless -r $file;
+      return 1 if $spoof;
+      open (FILE, $file) ||
+         (warn ("$file: $!\n"), return 0);
+      push (@filedata, <FILE>);
+      close (FILE);
+      return 1;
+   }
+
+And then, when specifying the replacement callback to C<SetSpoofCodes>,
+just create an anonymous sub that calls C<read_file> with C<$spoof>
+true:
+
+   &Getopt::Tabular::SetSpoofCodes 
+      (-read_file => sub { &read_file (@_[0,1], 1) });
+   
+Even though this means a bigger and more complicated callback, you only
+need I<one> such callback -- the alternative is to carry around both
+C<read_file> and C<spoof_read_file>, which might do redundant processing
+of the argument list.
+
 =head1 AUTHOR
 
 Greg Ward <greg@bic.mni.mcgill.ca>
@@ -806,7 +942,7 @@ the ensuing months; documentation written in a mad frenzy 16-18 April,
 1996.  Renamed to Getopt::Tabular, revamped, reorganized, and
 documentation expanded 8-11 November, 1996.
 
-Copyright (c) 1995-96 Greg Ward. All rights reserved.  This program is
+Copyright (c) 1995-97 Greg Ward. All rights reserved.  This is
 free software; you can redistribute it and/or modify it under the same
 terms as Perl itself.
 
