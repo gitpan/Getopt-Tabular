@@ -126,7 +126,7 @@ sub test_parse
    $leftovers = [];
    GetOptions ($opt_table, $args, $leftovers);
 
-   undef $SIG{'__WARN__'};
+   delete $SIG{'__WARN__'};
 
    $ok = 1;
    unless (slist_equal ($leftovers, $exp_leftovers))

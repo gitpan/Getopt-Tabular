@@ -1,9 +1,9 @@
 package Getopt::Tabular;
 
+#
 # Getopt/Tabular.pm
 #
-
-# Perl5 package for table-driven argument parsing, somewhat like Tk's
+# Perl module for table-driven argument parsing, somewhat like Tk's
 # ParseArgv.  To use the package, you just have to set up an argument table
 # (a list of array references), and call &GetOptions (the name is exported
 # from the module).  &GetOptions takes two or three arguments; a reference
@@ -25,9 +25,9 @@ package Getopt::Tabular;
 # renamed to Getopt::Tabular and somewhat reorganized/reworked,
 # 1996/11/08-11/10
 #
-# $Id: Tabular.pm,v 1.4 1997/06/19 18:11:09 greg Exp $
+# $Id: Tabular.pm,v 1.8 1999/04/08 01:11:24 greg Exp $
 
-# Copyright (c) 1995-96 Greg Ward. All rights reserved.  This package is
+# Copyright (c) 1995-98 Greg Ward. All rights reserved.  This package is
 # free software; you can redistribute it and/or modify it under the same
 # terms as Perl itself.
 
@@ -40,7 +40,7 @@ use vars qw/%Patterns %OptionHandlers %TypeDescriptions @OptionPatterns
             %SpoofCode $OptionTerminator $HelpOption
             $LongHelp $Usage $ErrorClass $ErrorMessage/;
 
-$VERSION = 0.1;
+$VERSION = 0.3;
 @ISA = qw/Exporter/;
 @EXPORT = qw/GetOptions/;
 @EXPORT_OK = qw/SetHelp SetHelpOption SetError GetError SpoofGetOptions/;
@@ -106,7 +106,7 @@ $ErrorMessage = "";                     # can be anything
 
 # -------------------------------------------------------------------- #
 # Public (but not exported) subroutines used to set options before     #
-# calling GetOptions.                                                   #
+# calling GetOptions.                                                  #
 # -------------------------------------------------------------------- #
 
 sub SetHelp
@@ -138,6 +138,8 @@ sub UnsetTerminator
 sub AddType
 {
    my ($type, $handler) = @_;
+   croak "AddType: \$handler must be a code ref"
+      unless ref $handler eq 'CODE';
    $OptionHandlers{$type} = $handler;
 }
 
@@ -181,6 +183,7 @@ sub GetError
 
 # --------------------------------------------------------------------
 # Private utility subroutines:
+#   quote_strings
 #   print_help
 #   scan_table
 #   match_abbreviation
@@ -189,6 +192,28 @@ sub GetError
 #   split_option
 #   find_calling_package
 # --------------------------------------------------------------------
+
+
+# 
+# &quote_strings
+#
+# prepares strings for printing in a list of default values (for the 
+# help text).  If a string is empty or contains whitespace, it is quoted;
+# otherwise, it is left alone.  The input list of strings is returned 
+# concatenated into a single space-separated string.  This is *not*
+# rigorous by any stretch; it's just to make the help text look nice.
+#
+sub quote_strings
+{
+   my @strings = @_;
+   my $string;
+   foreach $string (@strings)
+   {
+      $string = qq["$string"] if ($string eq '' || $string =~ /\s/);
+   }
+   return join (' ', @strings);
+}
+
 
 #
 # &print_help
@@ -206,24 +231,42 @@ sub print_help
    my ($argtable) = @_;
    my ($maxoption, $maxargdesc, $numcols, $opt, $breakers);
    my ($textlength, $std_format, $alt_format);
-   my ($option, $type, $help, $argdesc);
+   my ($option, $type, $num, $value, $help, $argdesc);
 
    $maxoption = 0;
    $maxargdesc = 0;
 
+   # Loop over all options to determine the length of the longest option name
    foreach $opt (@$argtable)
    {
-      my ($optlen, $argdesclen);
+      my ($argdesclen, $neg_option);
       my ($option, $type, $help, $argdesc) = @{$opt} [0,1,4,5];
       next if $type eq "section" or ! defined $help;
 
-      ($option) = &split_option ($opt) if $type eq "boolean";
-      $optlen = length ($option);
-      $maxoption = $optlen if ($optlen > $maxoption);
-      if (defined $argdesc)
+      # Boolean options contribute *two* lines to the help: one for the
+      # option, and one for its negative.  Other options just contribute
+      # one line, so they're a bit simpler.
+      if ($type eq 'boolean')
       {
-         $argdesclen = length ($argdesc);
-         $maxargdesc = $argdesclen if ($argdesclen > $maxargdesc);
+         my ($pos, $neg) = &split_option ($opt);
+         my $pos_len = length ($pos);
+         my $neg_len = length ($neg);
+         $maxoption = $pos_len if ($pos_len > $maxoption);
+         $maxoption = $neg_len if ($pos_len > $maxoption);
+         carp "Getopt::Tabular: argument descriptions ignored " .
+              "for boolean option \"$option\""
+            if defined $argdesc;
+      }
+      else
+      {
+         my $optlen = length ($option);
+         $maxoption = $optlen if ($optlen > $maxoption);
+
+         if (defined $argdesc)
+         {
+            $argdesclen = length ($argdesc);
+            $maxargdesc = $argdesclen if ($argdesclen > $maxargdesc);
+         }
       }
    }
 
@@ -248,12 +291,15 @@ sub print_help
    # though, because we don't know until now how much space to allocate
    # for the option (ie. $maxoption).
 
-   $breakers = $:;
-   $: = " \n";
-   chop ($numcols = `tput cols`);       # should use Term::Cap here, I s'pose
-   $numcols = 80 if $? || !$numcols;
+   local $: = " \n";
+   local $~;
 
-   $textlength = $numcols - 3 - $maxoption - 2;
+   $numcols = 80;                       # not always accurate, but faster!
+
+   # width of text = width of terminal, with columns removed as follows:
+   # 3 (for left margin), $maxoption (option names), 2 (gutter between
+   # option names and help text), and 2 (right margin)
+   $textlength = $numcols - 3 - $maxoption - 2 - 2;
    $std_format = "format STANDARD =\n" .
       "   @" . ("<" x $maxoption) . " ^" . ("<" x ($textlength-1)) . "\n".
       "\$option, \$help\n" .
@@ -272,13 +318,13 @@ sub print_help
    eval $alt_format;
    confess ("internal error with format \"$alt_format\": $@") if $@;
 
-   my $save_fmt = $~;
+   my $show_defaults = 1;
 
    print $LongHelp . "\n" if defined $LongHelp;
    print "Summary of options:\n";
    foreach $opt (@$argtable)
    {
-      ($option, $type, $help, $argdesc) = @{$opt}[0,1,4,5];
+      ($option, $type, $num, $value, $help, $argdesc) = @$opt;
 
       if ($type eq "section")
       {
@@ -288,23 +334,58 @@ sub print_help
 
       next unless defined $help;
       $argdesc = "" unless defined $argdesc;
-      ($option) = &split_option ($opt) if $type eq "boolean";
+
+      my $show_default = $show_defaults && $help !~ /\[default/;
 
       $~ = 'STANDARD';
-      if ($argdesc)
+      if ($type eq 'boolean')
       {
-         my $expanded_option = $option . " " . $argdesc if $argdesc;
-         $option = $expanded_option;
-         
-         if (length ($expanded_option) > $maxoption+1)
+         undef $option;                 # arg! why is this necessary?
+         my ($pos, $neg) = &split_option ($opt);
+         $option = $pos;
+         $help .= ' [default]'
+            if $show_default && defined $$value && $$value;
+         write;
+         $help = "opposite of $pos";
+         $help .= ' [default]' 
+            if $show_default && defined $$value && ! $$value;
+         $option = $neg;
+         write;
+      }
+      else
+      {
+         # If the option type is of the argument-taking variety, then
+         # we'll try to help out by saying what the default value(s)
+         # is/are
+         if ($OptionHandlers{$type} == \&process_pattern_option)
          {
-            $~ = 'ALTERNATIVE';
+            if ($num == 1)              # expectes a scalar value
+            {
+               $help .= ' [default: ' . quote_strings ($$value) . ']'
+                  if ($show_default && defined $$value);                  
+            }
+            else                        # expects a vector value
+            {
+               $help .= ' [default: ' . quote_strings (@$value) . ']'
+                  if ($show_default && 
+                      @$value && ! grep (! defined $_, @$value));
+            }
          }
-      }         
-      write;
+
+         if ($argdesc)
+         {
+            my $expanded_option = $option . " " . $argdesc if $argdesc;
+            $option = $expanded_option;
+
+            if (length ($expanded_option) > $maxoption+1)
+            {
+               $~ = 'ALTERNATIVE';
+            }
+         }         
+         write;
+      }
    }
-   $: = $breakers;
-   $~ = $save_fmt;
+
    print "\n";
    print $Usage if defined $Usage;
 }
